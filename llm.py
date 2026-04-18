@@ -5,32 +5,25 @@ from langchain_classic import hub
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import Docx2txtLoader
 
-def get_ai_message(user_message):
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
-
-    loader = Docx2txtLoader('./tax-markdown.docx')
-    document_list = loader.load_and_split(text_splitter)
-
-    # Existing Pinecone index dimension is 1024.
+def get_retriever():
     embedding = OpenAIEmbeddings(model='text-embedding-3-large', dimensions=1024)
     index_name = 'tax-markdown-index'
-    database = PineconeVectorStore.from_documents(embedding=embedding, index_name=index_name, documents=document_list)
-
-    llm = ChatOpenAI(model='gpt-4o')
-    prompt = hub.pull("rlm/rag-prompt")
-
+    database = PineconeVectorStore.from_existing_index(embedding=embedding, index_name=index_name)
     retriever = database.as_retriever(search_kwargs={'K': 4})
+    
+    return retriever
 
-    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever,
-                                        chain_type_kwargs={"prompt": prompt},
-                                        )
 
+def get_llm(model='gpt-4o'):
+    llm = ChatOpenAI(model=model)
+    
+    return llm
+
+
+def get_dictionary_chain():
     dictionary = ["사람을 나타내는 표현 -> 거주자"]
-
+    llm = get_llm()
     prompt = ChatPromptTemplate.from_template(f"""
             사용자의 질문을 보고, 우리의 사전을 참고해서 사용자의 질문을 변경해주세요.
             만약 변경할 필요가 없다고 판단된다면, 사용자의 질문을 변경하지 않아도 됩니다.
@@ -41,6 +34,22 @@ def get_ai_message(user_message):
     """)
 
     dictionary_chain = prompt | llm | StrOutputParser()
+    
+    return dictionary_chain
+
+
+def get_qa_chain():
+    llm = get_llm()
+    retriever = get_retriever()
+    prompt = hub.pull("rlm/rag-prompt")
+    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, chain_type_kwargs={"prompt": prompt})
+    
+    return qa_chain
+
+
+def get_ai_message(user_message):
+    dictionary_chain = get_dictionary_chain()
+    qa_chain = get_qa_chain()
     tax_chain = {"query": dictionary_chain} | qa_chain
     ai_message = tax_chain.invoke({"question": user_message})
     
